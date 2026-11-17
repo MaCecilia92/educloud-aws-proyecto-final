@@ -1,0 +1,15 @@
+{
+  "Rules": [
+    {
+      "ID": "logs-ia-glacier-y-borrado",
+      "Filter": { "Prefix": "" },
+      "Status": "Enabled",
+      "Transitions": [
+        { "Days": 30, "StorageClass": "STANDARD_IA" },
+        { "Days": 90, "StorageClass": "GLACIER" }
+      ],
+      "Expiration": { "Days": 365 },
+      "AbortIncompleteMultipartUpload": { "DaysAfterInitiation": 7 }
+    }
+  ]
+}

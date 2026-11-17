@@ -1,0 +1,17 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "LeerSoloElSecretoDeLaApp",
+      "Effect": "Allow",
+      "Action": "secretsmanager:GetSecretValue",
+      "Resource": "arn:aws:secretsmanager:us-east-1:<ID_DE_CUENTA>:secret:educloud/rds/app-*"
+    },
+    {
+      "Sid": "PublicarNuevoRegistroPreEntrega3",
+      "Effect": "Allow",
+      "Action": "sns:Publish",
+      "Resource": "arn:aws:sns:us-east-1:<ID_DE_CUENTA>:nuevo-registro"
+    }
+  ]
+}

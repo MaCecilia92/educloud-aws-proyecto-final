@@ -1,0 +1,16 @@
+{
+  "Rules": [
+    {
+      "ID": "backups-glacier-ir-deep-archive",
+      "Filter": { "Prefix": "" },
+      "Status": "Enabled",
+      "Transitions": [
+        { "Days": 30,  "StorageClass": "GLACIER_IR" },
+        { "Days": 180, "StorageClass": "DEEP_ARCHIVE" }
+      ],
+      "Expiration": { "Days": 1095 },
+      "NoncurrentVersionExpiration": { "NoncurrentDays": 30 },
+      "AbortIncompleteMultipartUpload": { "DaysAfterInitiation": 7 }
+    }
+  ]
+}

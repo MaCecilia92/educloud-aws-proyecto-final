@@ -1,0 +1,209 @@
+AWSTemplateFormatVersion: "2010-09-09"   # Única versión válida del formato (no es una fecha a actualizar)
+Description: >
+  EduCloud - Capa de datos: Amazon RDS for MySQL en subredes privadas,
+  accesible solo desde la capa de computo (EC2 y Lambda de reportes)
+  mediante Security Groups, con credenciales en AWS Secrets Manager.
+  Autora: Maria Cecilia Alegre.
+
+# Se despliega sobre la VPC de la Pre-entrega 3 (10.0.0.0/16), que ya tiene
+# las subredes publicas, las privadas de aplicacion y el SG-Web-Servers.
+Parameters:
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC educloud (10.0.0.0/16)
+  SgWebServersId:
+    Type: AWS::EC2::SecurityGroup::Id
+    Description: Security Group de las instancias EC2 (SG-Web-Servers)
+
+Resources:
+
+  # ---------------------------------------------------------------------------
+  # RED: dos subredes privadas de datos, una por zona de disponibilidad.
+  # Su tabla de rutas solo tiene la ruta local de la VPC: sin Internet Gateway
+  # ni NAT, la base no puede salir ni ser alcanzada desde internet.
+  # ---------------------------------------------------------------------------
+  SubredDatosA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VpcId
+      CidrBlock: 10.0.21.0/24
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      MapPublicIpOnLaunch: false
+      Tags: [{ Key: Name, Value: educloud-datos-a }]
+
+  SubredDatosB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VpcId
+      CidrBlock: 10.0.22.0/24
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      MapPublicIpOnLaunch: false
+      Tags: [{ Key: Name, Value: educloud-datos-b }]
+
+  TablaRutasDatos:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VpcId
+      Tags: [{ Key: Name, Value: educloud-datos-sin-internet }]
+
+  AsociacionDatosA:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties: { SubnetId: !Ref SubredDatosA, RouteTableId: !Ref TablaRutasDatos }
+
+  AsociacionDatosB:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties: { SubnetId: !Ref SubredDatosB, RouteTableId: !Ref TablaRutasDatos }
+
+  # RDS elige de este grupo donde ubicar la instancia principal y el standby.
+  GrupoSubredesDB:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupName: educloud-datos
+      DBSubnetGroupDescription: Subredes privadas de datos en 2 AZ
+      SubnetIds: [!Ref SubredDatosA, !Ref SubredDatosB]
+
+  # ---------------------------------------------------------------------------
+  # SECURITY GROUPS: la base acepta conexiones SOLO desde la capa de computo.
+  # Las reglas apuntan a otros Security Groups, no a rangos de IP: si el
+  # Auto Scaling Group crea una instancia nueva, ya tiene acceso; cualquier
+  # otro recurso de la VPC (o de internet) es rechazado.
+  # ---------------------------------------------------------------------------
+  SgRds:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: SG-RDS
+      GroupDescription: MySQL 3306 solo desde SG-Web-Servers y SG-Lambda-Reportes
+      VpcId: !Ref VpcId
+      # Sin reglas de entrada aca: se agregan abajo como recursos separados.
+      # Salida: la base no inicia conexiones. Esta regla reemplaza la regla por
+      # defecto "todo el trafico" (las respuestas igual salen: el SG tiene estado).
+      SecurityGroupEgress:
+        - IpProtocol: "-1"
+          CidrIp: 127.0.0.1/32
+          Description: Sin salida (reemplaza la regla por defecto)
+
+  SgLambdaReportes:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: SG-Lambda-Reportes
+      GroupDescription: Lambda de reportes dentro de la VPC
+      VpcId: !Ref VpcId
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+          Description: HTTPS via NAT hacia Secrets Manager y SES
+
+  EntradaRdsDesdeWeb:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref SgRds
+      IpProtocol: tcp
+      FromPort: 3306
+      ToPort: 3306
+      SourceSecurityGroupId: !Ref SgWebServersId
+      Description: MySQL desde las instancias EC2
+
+  EntradaRdsDesdeLambda:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref SgRds
+      IpProtocol: tcp
+      FromPort: 3306
+      ToPort: 3306
+      SourceSecurityGroupId: !Ref SgLambdaReportes
+      Description: MySQL desde la Lambda de reportes
+
+  SalidaLambdaHaciaRds:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref SgLambdaReportes
+      IpProtocol: tcp
+      FromPort: 3306
+      ToPort: 3306
+      DestinationSecurityGroupId: !Ref SgRds
+      Description: MySQL solo hacia SG-RDS
+
+  # ---------------------------------------------------------------------------
+  # CREDENCIALES: ninguna contraseña queda escrita en el codigo ni en la AMI.
+  # ---------------------------------------------------------------------------
+  SecretoAppDB:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: educloud/rds/app
+      Description: Usuario app_educloud (SELECT, INSERT, UPDATE) que usan las EC2
+      GenerateSecretString:
+        SecretStringTemplate: '{"username": "app_educloud"}'
+        GenerateStringKey: password
+        PasswordLength: 32
+        ExcludeCharacters: '"@/\'
+
+  SecretoReportesDB:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: educloud/rds/reportes
+      Description: Usuario reportes_educloud (solo SELECT) que usa la Lambda
+      GenerateSecretString:
+        SecretStringTemplate: '{"username": "reportes_educloud"}'
+        GenerateStringKey: password
+        PasswordLength: 32
+        ExcludeCharacters: '"@/\'
+
+  # TLS obligatorio: rechaza cualquier conexion sin cifrar.
+  ParametrosDB:
+    Type: AWS::RDS::DBParameterGroup
+    Properties:
+      Family: mysql8.4
+      Description: EduCloud - MySQL 8.4 con TLS obligatorio
+      Parameters:
+        require_secure_transport: "1"
+
+  # ---------------------------------------------------------------------------
+  # BASE DE DATOS
+  # db.t4g.micro (2 vCPU con rafagas, 1 GiB): suficiente para el arranque.
+  # Si crece, se cambia la clase de instancia sin tocar la aplicacion.
+  # ---------------------------------------------------------------------------
+  BaseDatos:
+    Type: AWS::RDS::DBInstance
+    DeletionPolicy: Snapshot          # si se borra el stack, primero guarda un snapshot
+    UpdateReplacePolicy: Snapshot
+    Properties:
+      DBInstanceIdentifier: educloud-mysql
+      Engine: mysql
+      EngineVersion: "8.4"            # RDS elige la version menor por defecto de la 8.4
+      DBInstanceClass: db.t4g.micro
+      AllocatedStorage: "20"
+      StorageType: gp3
+      DBName: educloud
+      MasterUsername: admin_educloud
+      ManageMasterUserPassword: true  # RDS genera la clave del administrador y la guarda (y rota) en Secrets Manager
+      MultiAZ: true                   # standby sincronico en la otra AZ; failover automatico
+      PubliclyAccessible: false       # sin IP publica: solo se llega desde dentro de la VPC
+      DBSubnetGroupName: !Ref GrupoSubredesDB
+      VPCSecurityGroups: [!Ref SgRds]
+      DBParameterGroupName: !Ref ParametrosDB
+      StorageEncrypted: true          # cifrado en reposo con AWS KMS (datos, backups y snapshots)
+      BackupRetentionPeriod: 7        # backups automaticos: restauracion a cualquier segundo de los ultimos 7 dias
+      PreferredBackupWindow: "06:00-07:00"           # UTC = 03:00-04:00 en Argentina, horario de menor uso
+      PreferredMaintenanceWindow: "sun:07:00-sun:08:00"
+      DeletionProtection: true        # impide borrar la base por error
+      AutoMinorVersionUpgrade: true   # parches de seguridad menores automaticos
+      CopyTagsToSnapshot: true
+      EnableCloudwatchLogsExports: [error, slowquery]
+      Tags: [{ Key: Proyecto, Value: EduCloud }]
+
+Outputs:
+  EndpointBaseDatos:
+    Description: Endpoint DNS (privado). En un failover apunta solo al standby.
+    Value: !GetAtt BaseDatos.Endpoint.Address
+  SecretoAdministrador:
+    Description: Secreto con la clave del usuario maestro (creado por RDS)
+    Value: !GetAtt BaseDatos.MasterUserSecret.SecretArn
+  SecretoApp:
+    Value: !Ref SecretoAppDB
+  SecretoReportes:
+    Value: !Ref SecretoReportesDB
+  SgLambdaReportesId:
+    Description: Asignar a la Lambda reporte-diario (VpcConfig)
+    Value: !Ref SgLambdaReportes
