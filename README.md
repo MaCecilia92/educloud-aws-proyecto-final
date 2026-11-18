@@ -104,4 +104,6 @@ DRY_RUN=1 bash infraestructura/budgets/crear_presupuesto_educloud.sh
 
 ## Autora
 
-**María Cecilia Alegre** · Curso AWS Cloud Practitioner, Coderhouse (2026)
+**María Cecilia Alegre** · [GitHub](https://github.com/MaCecilia92)
+
+Curso AWS Cloud Practitioner, Coderhouse · aprobado con certificado en noviembre de 2026.
